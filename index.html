@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#1565c0">
+<title>Talk Test Trainer — Web</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, 'Segoe UI', Roboto, sans-serif;
+    background: #0d1b2a; color: #e8eef5; min-height: 100vh;
+    display: flex; flex-direction: column; align-items: center; padding: 16px;
+  }
+  h1 { font-size: 1.3rem; margin-bottom: 4px; }
+  .sub { font-size: .8rem; color: #8fa8c0; margin-bottom: 16px; }
+  .card {
+    background: #16283c; border-radius: 16px; padding: 18px;
+    width: 100%; max-width: 420px; margin-bottom: 12px;
+    box-shadow: 0 4px 20px rgba(0,0,0,.4);
+  }
+  .hr-big { font-size: 3.4rem; font-weight: 800; line-height: 1; }
+  .hr-unit { font-size: 1.1rem; color: #8fa8c0; }
+  .zone-chip {
+    display: inline-block; padding: 6px 14px; border-radius: 20px;
+    font-weight: 700; font-size: .9rem; margin-top: 8px; color: #0d1b2a;
+  }
+  .row { display: flex; gap: 10px; }
+  .row .card { flex: 1; text-align: center; padding: 12px; }
+  .metric-label { font-size: .7rem; color: #8fa8c0; }
+  .metric-val { font-size: 1.7rem; font-weight: 800; margin: 4px 0 2px; }
+  .metric-unit { font-size: .65rem; color: #8fa8c0; }
+  button {
+    width: 100%; max-width: 420px; border: none; border-radius: 14px;
+    padding: 16px; font-size: 1rem; font-weight: 700; cursor: pointer;
+    margin-bottom: 12px; transition: transform .1s;
+  }
+  button:active { transform: scale(.97); }
+  .btn-primary { background: #1e88e5; color: #fff; }
+  .btn-talk { background: #43a047; color: #fff; }
+  .btn-talk:disabled { background: #2e5b31; }
+  .btn-stop { background: #c62828; color: #fff; }
+  .age-row { display: flex; align-items: center; gap: 12px; }
+  .age-row input[type=range] { flex: 1; }
+  .age-val { font-size: 1.4rem; font-weight: 800; min-width: 40px; text-align: center; }
+  #log {
+    width: 100%; max-width: 420px; font-size: .75rem; color: #9fb8d0;
+    max-height: 140px; overflow-y: auto; font-family: monospace;
+  }
+  #log div { padding: 2px 0; border-bottom: 1px solid #1c3247; }
+  .talk-result { font-size: .85rem; line-height: 1.5; }
+  .talk-icon { font-size: 1.6rem; }
+  .hidden { display: none !important; }
+  .status { font-size: .8rem; color: #ffd54f; margin-bottom: 10px; text-align: center; max-width: 420px; }
+  input[type=range] { accent-color: #1e88e5; }
+</style>
+</head>
+<body>
+
+<h1>❤️ Talk Test Trainer</h1>
+<div class="sub">Polar BLE + talk test vocale — stima sforzo e respirazione</div>
+
+<div class="status" id="status">Richiede Chrome su Android + connessione dati (riconoscimento vocale)</div>
+
+<!-- SETUP -->
+<div class="card" id="setupCard">
+  <div class="age-row">
+    <span>Età</span>
+    <input type="range" id="age" min="15" max="80" value="35">
+    <span class="age-val" id="ageVal">35</span>
+  </div>
+  <div style="height:14px"></div>
+  <button class="btn-primary" id="connectBtn">🔵 Connetti sensore Polar (Bluetooth)</button>
+</div>
+
+<!-- SESSIONE -->
+<div id="session" class="hidden" style="width:100%; max-width:420px;">
+  <div class="card" style="text-align:center;">
+    <span class="hr-big" id="hrVal">--</span> <span class="hr-unit">bpm</span>
+    <div style="font-size:.85rem; color:#8fa8c0;" id="hrPct"></div>
+    <div><span class="zone-chip" id="zoneChip">—</span></div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <div class="metric-label">Respirazione (da RR Polar)</div>
+      <div class="metric-val" id="rrEdr">--</div>
+      <div class="metric-unit">atti/min</div>
+    </div>
+    <div class="card">
+      <div class="metric-label">Respirazione (talk test)</div>
+      <div class="metric-val" id="rrTalk">--</div>
+      <div class="metric-unit">atti/min</div>
+    </div>
+  </div>
+
+  <div class="card hidden" id="talkCard">
+    <div class="talk-result" id="talkResult"></div>
+  </div>
+
+  <button class="btn-talk" id="talkBtn">🎤 Talk test manuale</button>
+  <button class="btn-stop" id="stopBtn">⏹ Termina sessione</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+/* ============================================================
+   TALK TEST TRAINER — Web Bluetooth (0x180D) + Web Speech API
+   ============================================================ */
+
+const $ = id => document.getElementById(id);
+const log = msg => {
+  const d = document.createElement('div');
+  d.textContent = new Date().toLocaleTimeString('it-IT') + '  ' + msg;
+  $('log').prepend(d);
+};
+
+const age = () => parseInt($('age').value, 10);
+const hrMax = () => 220 - age();
+$('age').addEventListener('input', () => $('ageVal').textContent = $('age').value);
+
+const ZONES = [
+  { name: 'Zona inattiva',        lo: .40, hi: .51, color: '#90a4ae' },
+  { name: 'Zona salute',          lo: .51, hi: .61, color: '#fdd835' },
+  { name: 'Zona fitness',         lo: .61, hi: .76, color: '#fb8c00' },
+  { name: 'Zona performance',     lo: .76, hi: .86, color: '#43a047' },
+  { name: 'Zona alta performance',lo: .86, hi: 1.01, color: '#ab47bc' },
+];
+const zoneFor = pct => ZONES.find(z => pct >= z.lo && pct < z.hi) || ZONES[0];
+
+/* ---------------- BLUETOOTH ---------------- */
+let bleDevice = null, hrChar = null, lastZone = null;
+
+async function connectBle() {
+  if (!navigator.bluetooth) {
+    alert('Web Bluetooth non supportato: usa Chrome su Android (o Bluefy su iOS).');
+    return;
+  }
+  try {
+    log('Scansione sensore HR in corso...');
+    bleDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ services: ['heart_rate'] }]
+    });
+    log('Trovato: ' + (bleDevice.name || 'sensore HR'));
+    bleDevice.addEventListener('gattserverdisconnected', onDisconnected);
+
+    const server = await bleDevice.gatt.connect();
+    const service = await server.getPrimaryService('heart_rate');
+    hrChar = await service.getCharacteristic('heart_rate_measurement');
+    await hrChar.startNotifications();
+    hrChar.addEventListener('characteristicvaluechanged', onHrData);
+
+    $('setupCard').classList.add('hidden');
+    $('session').classList.remove('hidden');
+    $('status').textContent = 'Connesso a ' + (bleDevice.name || 'sensore');
+    log('Connesso. Sessione avviata.');
+    keepAwake();
+    autoTestTimer = setInterval(() => runTalkTest(), 180000); // ogni 3 min
+  } catch (e) {
+    if (String(e).includes('cancelled')) log('Selezione annullata.');
+    else { log('Errore: ' + e); alert('Connessione fallita: ' + e); }
+  }
+}
+
+function onDisconnected() {
+  log('Sensore disconnesso.');
+  $('session').classList.add('hidden');
+  $('setupCard').classList.remove('hidden');
+  clearInterval(autoTestTimer);
+}
+
+/* ---------------- PARSING HR + RR ---------------- */
+let rrIntervals = []; // secondi
+
+function onHrData(e) {
+  const dv = e.target.value;
+  const flags = dv.getUint8(0);
+  let idx = 1;
+  let bpm = (flags & 0x01) ? dv.getUint16(idx, true) : dv.getUint8(idx);
+  idx += (flags & 0x01) ? 2 : 1;
+  if (flags & 0x10) { // intervalli RR presenti
+    while (idx + 1 < dv.byteLength) {
+      rrIntervals.push(dv.getUint16(idx, true) / 1024);
+      idx += 2;
+    }
+    if (rrIntervals.length > 800) rrIntervals = rrIntervals.slice(-600);
+  }
+  updateHr(bpm);
+}
+
+function updateHr(bpm) {
+  const pct = bpm / hrMax();
+  $('hrVal').textContent = bpm;
+  $('hrPct').textContent = 'HRmax ' + hrMax() + ' · ' + Math.round(pct * 100) + '%';
+  const z = zoneFor(pct);
+  const chip = $('zoneChip');
+  chip.textContent = z.name;
+  chip.style.background = z.color;
+
+  const edr = estimateRR();
+  if (edr) $('rrEdr').textContent = edr.toFixed(1);
+
+  // Intervento automatico al cambio zona
+  if (lastZone && z !== lastZone && !talkRunning) {
+    log('Cambio zona → ' + z.name + ' (' + bpm + ' bpm): avvio talk test');
+    runTalkTest();
+  }
+  if (z !== lastZone && navigator.vibrate) navigator.vibrate(200);
+  lastZone = z;
+}
+
+/* ---------------- STIMA RESPIRAZIONE (EDR da RR) ---------------- */
+/* La respirazione modula il ritmo cardiaco: nel segnale RR ricampionato
+   compare un picco nella banda 0.10–0.55 Hz (6–33 atti/min). */
+function estimateRR() {
+  if (rrIntervals.length < 30) return null;
+  const beats = [0];
+  for (const rr of rrIntervals) beats.push(beats[beats.length - 1] + rr);
+  const total = beats[beats.length - 1];
+  const WIN = 64, FS = 4, N = WIN * FS;
+  if (total < WIN * 0.7) return null;
+
+  const t0 = total - WIN, sig = new Float64Array(N);
+  let bi = 0;
+  for (let i = 0; i < N; i++) {
+    const t = t0 + i / FS;
+    while (bi < beats.length - 2 && beats[bi + 1] < t) bi++;
+    sig[i] = (beats[bi] - t) * 1000;
+  }
+  let mean = 0;
+  for (let i = 0; i < N; i++) mean += sig[i];
+  mean /= N;
+
+  let bestPow = 0, bestF = 0;
+  for (let f = 0.10; f <= 0.55; f += 0.01) {
+    let re = 0, im = 0;
+    for (let i = 0; i < N; i++) {
+      const ph = 2 * Math.PI * f * i / FS;
+      re += (sig[i] - mean) * Math.cos(ph);
+      im -= (sig[i] - mean) * Math.sin(ph);
+    }
+    const p = re * re + im * im;
+    if (p > bestPow) { bestPow = p; bestF = f; }
+  }
+  return bestF * 60;
+}
+
+/* ---------------- TALK TEST VOCALE ---------------- */
+const PHRASES = [
+  'Il cielo è azzurro sopra Roma e oggi sono uscito a correre',
+  'Mario mangia la mela sotto il grande albero del parco',
+  'Quando corro in montagna respiro forte ma sto bene',
+  'La bicicletta nuova ha le ruote grandi e il telaio leggero',
+];
+let phraseIdx = 0, talkRunning = false, autoTestTimer = null;
+
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function normalize(s) {
+  return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '')
+          .replace(/[^a-z ]/g, ' ').split(' ').filter(w => w.length > 0);
+}
+
+async function speak(text) {
+  return new Promise(res => {
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = 'it-IT'; u.rate = 0.9;
+    u.onend = res;
+    speechSynthesis.speak(u);
+  });
+}
+
+function rrFromTalkLevel(level) {
+  return { full: 16, words: 24, syllables: 32, none: 40 }[level];
+}
+function levelInfo(level) {
+  return {
+    full:     ['😊', 'Frase completa — sforzo lieve/moderato'],
+    words:    ['😐', 'Parole isolate — sforzo moderato/vigoroso'],
+    syllables:['😖', 'Solo sillabe — sforzo strenuo'],
+    none:     ['🚫', 'Non riesce a parlare — sforzo massimale'],
+  }[level];
+}
+
+async function runTalkTest() {
+  if (talkRunning) return;
+  if (!SR) { alert('Riconoscimento vocale non supportato da questo browser.'); return; }
+  talkRunning = true;
+  const btn = $('talkBtn');
+  btn.disabled = true; btn.textContent = '⏳ Parla ora: ripeti la frase...';
+
+  const phrase = PHRASES[phraseIdx++ % PHRASES.length];
+  log('Talk test — ascolta e ripeti: "' + phrase + '"');
+  await speak(phrase);
+
+  // Ascolta la ripetizione (max 8 s)
+  const rec = new SR();
+  rec.lang = 'it-IT'; rec.continuous = true; rec.interimResults = true;
+  let heard = '', started = Date.now();
+  rec.onresult = e => { heard = e.results[e.results.length - 1][0].transcript; };
+  try { rec.start(); } catch (e) {}
+
+  await new Promise(r => setTimeout(r, 8000));
+  try { rec.stop(); } catch (e) {}
+  const speechMs = Date.now() - started;
+
+  // Classificazione per sovrapposizione parole
+  const exp = normalize(phrase);
+  const got = new Set(normalize(heard));
+  let matched = 0;
+  for (const w of exp) if (got.has(w)) matched++;
+  const completion = exp.length ? matched / exp.length : 0;
+
+  let level;
+  if (completion >= 0.80) level = 'full';
+  else if (completion >= 0.40) level = 'words';
+  else if (completion > 0.05 || speechMs > 3500) level = 'syllables';
+  else level = 'none';
+
+  const [icon, label] = levelInfo(level);
+  const rrT = rrFromTalkLevel(level);
+  $('rrTalk').textContent = rrT;
+  $('talkCard').classList.remove('hidden');
+  $('talkResult').innerHTML =
+    '<span class="talk-icon">' + icon + '</span><br><b>' + label + '</b><br>' +
+    'Completamento: ' + Math.round(completion * 100) + '% · durata ' +
+    (speechMs / 1000).toFixed(1) + ' s<br>' +
+    '<i>Capito: "' + (heard || '—') + '"</i>';
+  log(label + ' (' + Math.round(completion * 100) + '%)');
+
+  btn.disabled = false; btn.textContent = '🎤 Talk test manuale';
+  talkRunning = false;
+}
+
+/* ---------------- WAKE LOCK ---------------- */
+let wakeLock = null;
+async function keepAwake() {
+  try {
+    if ('wakeLock' in navigator) {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => log('Schermo riattivato.'));
+    }
+  } catch (e) {}
+}
+
+/* ---------------- EVENTI ---------------- */
+$('connectBtn').addEventListener('click', connectBle);
+$('talkBtn').addEventListener('click', runTalkTest);
+$('stopBtn').addEventListener('click', async () => {
+  clearInterval(autoTestTimer);
+  if (hrChar) { try { await hrChar.stopNotifications(); } catch (e) {} }
+  if (bleDevice && bleDevice.gatt.connected) bleDevice.gatt.disconnect();
+  if (wakeLock) { try { await wakeLock.release(); } catch (e) {} }
+  speechSynthesis.cancel();
+  location.reload();
+});
+</script>
+</body>
+</html>
